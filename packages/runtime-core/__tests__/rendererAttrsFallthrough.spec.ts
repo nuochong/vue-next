@@ -8,13 +8,14 @@ import {
   onUpdated,
   defineComponent,
   openBlock,
-  createBlock
+  createBlock,
+  FunctionalComponent,
+  createCommentVNode,
+  Fragment
 } from '@vue/runtime-dom'
-import { mockWarn } from '@vue/shared'
+import { PatchFlags } from '@vue/shared/src'
 
 describe('attribute fallthrough', () => {
-  mockWarn()
-
   it('should allow attrs to fallthrough', async () => {
     const click = jest.fn()
     const childUpdated = jest.fn()
@@ -335,7 +336,7 @@ describe('attribute fallthrough', () => {
   it('should warn when fallthrough fails on non-single-root', () => {
     const Parent = {
       render() {
-        return h(Child, { foo: 1, class: 'parent' })
+        return h(Child, { foo: 1, class: 'parent', onBar: () => {} })
       }
     }
 
@@ -351,12 +352,13 @@ describe('attribute fallthrough', () => {
     render(h(Parent), root)
 
     expect(`Extraneous non-props attributes (class)`).toHaveBeenWarned()
+    expect(`Extraneous non-emits event listeners`).toHaveBeenWarned()
   })
 
   it('should not warn when $attrs is used during render', () => {
     const Parent = {
       render() {
-        return h(Child, { foo: 1, class: 'parent' })
+        return h(Child, { foo: 1, class: 'parent', onBar: () => {} })
       }
     }
 
@@ -372,13 +374,15 @@ describe('attribute fallthrough', () => {
     render(h(Parent), root)
 
     expect(`Extraneous non-props attributes`).not.toHaveBeenWarned()
+    expect(`Extraneous non-emits event listeners`).not.toHaveBeenWarned()
+
     expect(root.innerHTML).toBe(`<div></div><div class="parent"></div>`)
   })
 
   it('should not warn when context.attrs is used during render', () => {
     const Parent = {
       render() {
-        return h(Child, { foo: 1, class: 'parent' })
+        return h(Child, { foo: 1, class: 'parent', onBar: () => {} })
       }
     }
 
@@ -394,7 +398,70 @@ describe('attribute fallthrough', () => {
     render(h(Parent), root)
 
     expect(`Extraneous non-props attributes`).not.toHaveBeenWarned()
+    expect(`Extraneous non-emits event listeners`).not.toHaveBeenWarned()
+
     expect(root.innerHTML).toBe(`<div></div><div class="parent"></div>`)
+  })
+
+  it('should not warn when context.attrs is used during render (functional)', () => {
+    const Parent = {
+      render() {
+        return h(Child, { foo: 1, class: 'parent', onBar: () => {} })
+      }
+    }
+
+    const Child: FunctionalComponent = (_, { attrs }) => [
+      h('div'),
+      h('div', attrs)
+    ]
+
+    Child.props = ['foo']
+
+    const root = document.createElement('div')
+    document.body.appendChild(root)
+    render(h(Parent), root)
+
+    expect(`Extraneous non-props attributes`).not.toHaveBeenWarned()
+    expect(`Extraneous non-emits event listeners`).not.toHaveBeenWarned()
+    expect(root.innerHTML).toBe(`<div></div><div class="parent"></div>`)
+  })
+
+  it('should not warn when functional component has optional props', () => {
+    const Parent = {
+      render() {
+        return h(Child, { foo: 1, class: 'parent', onBar: () => {} })
+      }
+    }
+
+    const Child = (props: any) => [h('div'), h('div', { class: props.class })]
+
+    const root = document.createElement('div')
+    document.body.appendChild(root)
+    render(h(Parent), root)
+
+    expect(`Extraneous non-props attributes`).not.toHaveBeenWarned()
+    expect(`Extraneous non-emits event listeners`).not.toHaveBeenWarned()
+    expect(root.innerHTML).toBe(`<div></div><div class="parent"></div>`)
+  })
+
+  it('should warn when functional component has props and does not use attrs', () => {
+    const Parent = {
+      render() {
+        return h(Child, { foo: 1, class: 'parent', onBar: () => {} })
+      }
+    }
+
+    const Child: FunctionalComponent = () => [h('div'), h('div')]
+
+    Child.props = ['foo']
+
+    const root = document.createElement('div')
+    document.body.appendChild(root)
+    render(h(Parent), root)
+
+    expect(`Extraneous non-props attributes`).toHaveBeenWarned()
+    expect(`Extraneous non-emits event listeners`).toHaveBeenWarned()
+    expect(root.innerHTML).toBe(`<div></div><div></div>`)
   })
 
   // #677
@@ -427,5 +494,167 @@ describe('attribute fallthrough', () => {
     cls.value = 'barr'
     await nextTick()
     expect(root.innerHTML).toBe(`<div aria-hidden="false" class="barr"></div>`)
+  })
+
+  it('should not let listener fallthrough when declared in emits (stateful)', () => {
+    const Child = defineComponent({
+      emits: ['click'],
+      render() {
+        return h(
+          'button',
+          {
+            onClick: () => {
+              this.$emit('click', 'custom')
+            }
+          },
+          'hello'
+        )
+      }
+    })
+
+    const onClick = jest.fn()
+    const App = {
+      render() {
+        return h(Child, {
+          onClick
+        })
+      }
+    }
+
+    const root = document.createElement('div')
+    document.body.appendChild(root)
+    render(h(App), root)
+
+    const node = root.children[0] as HTMLElement
+    node.dispatchEvent(new CustomEvent('click'))
+    expect(onClick).toHaveBeenCalledTimes(1)
+    expect(onClick).toHaveBeenCalledWith('custom')
+  })
+
+  it('should not let listener fallthrough when declared in emits (functional)', () => {
+    const Child: FunctionalComponent<{}, { click: any }> = (_, { emit }) => {
+      // should not be in props
+      expect((_ as any).onClick).toBeUndefined()
+      return h('button', {
+        onClick: () => {
+          emit('click', 'custom')
+        }
+      })
+    }
+    Child.emits = ['click']
+
+    const onClick = jest.fn()
+    const App = {
+      render() {
+        return h(Child, {
+          onClick
+        })
+      }
+    }
+
+    const root = document.createElement('div')
+    document.body.appendChild(root)
+    render(h(App), root)
+
+    const node = root.children[0] as HTMLElement
+    node.dispatchEvent(new CustomEvent('click'))
+    expect(onClick).toHaveBeenCalledTimes(1)
+    expect(onClick).toHaveBeenCalledWith('custom')
+  })
+
+  it('should support fallthrough for fragments with single element + comments', () => {
+    const click = jest.fn()
+
+    const Hello = {
+      setup() {
+        return () => h(Child, { class: 'foo', onClick: click })
+      }
+    }
+
+    const Child = {
+      setup() {
+        return () => (
+          openBlock(),
+          createBlock(
+            Fragment,
+            null,
+            [
+              createCommentVNode('hello'),
+              h('button'),
+              createCommentVNode('world')
+            ],
+            PatchFlags.STABLE_FRAGMENT | PatchFlags.DEV_ROOT_FRAGMENT
+          )
+        )
+      }
+    }
+
+    const root = document.createElement('div')
+    document.body.appendChild(root)
+    render(h(Hello), root)
+
+    expect(root.innerHTML).toBe(
+      `<!--hello--><button class="foo"></button><!--world-->`
+    )
+    const button = root.children[0] as HTMLElement
+    button.dispatchEvent(new CustomEvent('click'))
+    expect(click).toHaveBeenCalled()
+  })
+
+  // #1989
+  it('should not fallthrough v-model listeners with corresponding declared prop', () => {
+    let textFoo = ''
+    let textBar = ''
+    const click = jest.fn()
+
+    const App = defineComponent({
+      setup() {
+        return () =>
+          h(Child, {
+            modelValue: textFoo,
+            'onUpdate:modelValue': (val: string) => {
+              textFoo = val
+            }
+          })
+      }
+    })
+
+    const Child = defineComponent({
+      props: ['modelValue'],
+      setup(_props, { emit }) {
+        return () =>
+          h(GrandChild, {
+            modelValue: textBar,
+            'onUpdate:modelValue': (val: string) => {
+              textBar = val
+              emit('update:modelValue', 'from Child')
+            }
+          })
+      }
+    })
+
+    const GrandChild = defineComponent({
+      props: ['modelValue'],
+      setup(_props, { emit }) {
+        return () =>
+          h('button', {
+            onClick() {
+              click()
+              emit('update:modelValue', 'from GrandChild')
+            }
+          })
+      }
+    })
+
+    const root = document.createElement('div')
+    document.body.appendChild(root)
+    render(h(App), root)
+
+    const node = root.children[0] as HTMLElement
+
+    node.dispatchEvent(new CustomEvent('click'))
+    expect(click).toHaveBeenCalled()
+    expect(textBar).toBe('from GrandChild')
+    expect(textFoo).toBe('from Child')
   })
 })
